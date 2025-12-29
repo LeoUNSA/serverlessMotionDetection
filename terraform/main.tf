@@ -117,7 +117,15 @@ resource "aws_sns_topic_subscription" "email_2" {
   endpoint  = "smenaq@unsa.edu.pe"
 }
 
-# Update IAM Policy to allow SNS Publish
+# S3 Bucket for Images
+resource "aws_s3_bucket" "motion_images" {
+  bucket_prefix = "motion-images-"
+  force_destroy = true
+}
+
+
+
+# Update IAM Policy to allow S3 Access
 resource "aws_iam_role_policy" "lambda_policy" {
   name = "${var.project_name}_lambda_policy"
   role = aws_iam_role.lambda_role.id
@@ -151,6 +159,14 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "sns:Publish"
         ]
         Resource = aws_sns_topic.motion_alerts.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject"
+        ]
+        Resource = "${aws_s3_bucket.motion_images.arn}/*"
       }
     ]
   })
@@ -163,7 +179,7 @@ resource "aws_apigatewayv2_route" "get_motion" {
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
 }
 
-# Add SNS ARN to Lambda Environment Variables
+# Add SNS ARN and S3 Bucket to Lambda Env
 resource "aws_lambda_function" "motion_lambda" {
   filename      = data.archive_file.lambda_zip.output_path
   function_name = "MotionHandler"
@@ -176,6 +192,7 @@ resource "aws_lambda_function" "motion_lambda" {
   environment {
     variables = {
       SNS_TOPIC_ARN = aws_sns_topic.motion_alerts.arn
+      S3_BUCKET     = aws_s3_bucket.motion_images.id
     }
   }
 

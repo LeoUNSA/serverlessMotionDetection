@@ -77,6 +77,7 @@
                         <th>Time</th>
                         <th>Sensor ID</th>
                         <th>Type</th>
+                        <th>Image</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -116,11 +117,19 @@
                 const date = new Date(item.Timestamp * 1000);
                 const timeStr = date.toLocaleString();
 
+                let imageHtml = '<span style="color: #666;">No Image</span>';
+                if (item.ImageUrl) {
+                    imageHtml = `<a href="${item.ImageUrl}" target="_blank">
+                        <img src="${item.ImageUrl}" style="height: 50px; border-radius: 4px; border: 1px solid #00d2ff;">
+                    </a>`;
+                }
+
                 // Table Row
                 const row = `<tr>
                     <td><span class="status-dot"></span>${timeStr}</td>
                     <td>${item.SensorID}</td>
                     <td>${item.EventType}</td>
+                    <td>${imageHtml}</td>
                 </tr>`;
                 tbody.innerHTML += row;
 

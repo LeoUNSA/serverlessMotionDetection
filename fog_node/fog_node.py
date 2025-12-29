@@ -2,13 +2,50 @@ import serial
 import time
 import requests
 import json
+import base64
 import os
 
+# Try importing OpenCV
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    print("OpenCV (cv2) not found. Image capture disabled.")
+    CV2_AVAILABLE = False
+
 # Configuration
-SERIAL_PORT = '/dev/ttyACM0' # Update this to match your connected Arduino
+SERIAL_PORT = '/dev/ttyACM0' 
 BAUD_RATE = 9600
-API_URL = "YOUR_API_GATEWAY_URL" # Placeholder, will be updated after Terraform deploy
+# Placeholder - user must update this!
+API_URL = "https://abal53wj01.execute-api.us-east-1.amazonaws.com" 
 SENSOR_ID = "PIR_SENSOR_01"
+
+def capture_image():
+    if not CV2_AVAILABLE:
+        return None
+    
+    try:
+        # Open default camera
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Could not open camera")
+            return None
+            
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret:
+            # Resize to reduce payload size (e.g., 640x480)
+            frame = cv2.resize(frame, (640, 480))
+            # Encode as JPEG
+            retval, buffer = cv2.imencode('.jpg', frame)
+            if retval:
+                jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                return jpg_as_text
+    except Exception as e:
+        print(f"Camera error: {e}")
+    
+    return None
 
 def main():
     try:
@@ -16,22 +53,24 @@ def main():
         print(f"Connected to {SERIAL_PORT}")
     except Exception as e:
         print(f"Error connecting to serial port: {e}")
-        return
+        # For testing without Arduino, we loop but don't crash
+        # return 
 
     last_state = "OFF"
     
-    # Simple state machine for event aggregation could be added here
-    # For now, we follow the plan's logic of filtering/sending relevant events
+    print("Fog Node Running. Waiting for motion...")
 
     while True:
         try:
-            if ser.in_waiting > 0:
+            # Check for serial data
+            if 'ser' in locals() and ser.is_open and ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8').strip()
                 
-                # Basic logic: filter "ON" events. 
-                # In a real scenario, we might want to debounce or group "ON"s.
                 if line == "ON" and last_state != "ON":
-                    print("Motion Detected! Sending event...")
+                    print("Motion Detected! Capturing event...")
+                    
+                    # Capture Image
+                    image_b64 = capture_image()
                     
                     data = {
                         "sensor": SENSOR_ID,
@@ -39,16 +78,17 @@ def main():
                         "type": "motion_detected"
                     }
                     
+                    if image_b64:
+                        print(f"Image captured ({len(image_b64)} bytes).")
+                        data["image"] = image_b64
+
+                    # Send to Cloud
                     try:
-                        # In a real deployment, we might want to run this async or in a separate thread
-                        # to avoid blocking the serial read loop.
-                        if API_URL != "YOUR_API_GATEWAY_URL":
+                        if "YOUR_API" not in API_URL:
                              response = requests.post(f"{API_URL}/motion", json=data)
-                             print(f"Server response: {response.status_code}")
-                        else:
-                             print("API URL not set. Skipping upload.")
+                             print(f"Cloud upload: {response.status_code}")
                     except Exception as req_err:
-                        print(f"Error sending request: {req_err}")
+                        print(f"Upload failed: {req_err}")
 
                     last_state = "ON"
                 
@@ -56,7 +96,6 @@ def main():
                     last_state = "OFF"
 
         except KeyboardInterrupt:
-            print("Exiting...")
             break
         except Exception as e:
             print(f"Error: {e}")
