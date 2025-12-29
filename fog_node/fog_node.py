@@ -15,7 +15,7 @@ except ImportError:
     CV2_AVAILABLE = False
 
 # Configuration
-SERIAL_PORT = '/dev/ttyACM0' 
+SERIAL_PORT = '/dev/ttyUSB0' 
 BAUD_RATE = 9600
 # Placeholder - user must update this!
 API_URL = "https://abal53wj01.execute-api.us-east-1.amazonaws.com" 
