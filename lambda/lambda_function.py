@@ -96,8 +96,8 @@ def handle_get(event):
     
     table = dynamodb.Table(TABLE_NAME)
     
-    # Simple scan, limit 20
-    response = table.scan(Limit=20)
+    # Simple scan, limit 100
+    response = table.scan(Limit=100)
     items = response.get('Items', [])
     
     # Sort locally by timestamp desc
