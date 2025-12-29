@@ -5,9 +5,9 @@ import json
 import os
 
 # Configuration
-SERIAL_PORT = '/dev/ttyACM0' # Update this to match your connected Arduino
+SERIAL_PORT = '/dev/ttyUSB0' # Update this to match your connected Arduino
 BAUD_RATE = 9600
-API_URL = "YOUR_API_GATEWAY_URL" # Placeholder, will be updated after Terraform deploy
+API_URL = "https://abal53wj01.execute-api.us-east-1.amazonaws.com/" # Placeholder, will be updated after Terraform deploy
 SENSOR_ID = "PIR_SENSOR_01"
 
 def main():
@@ -42,7 +42,7 @@ def main():
                     try:
                         # In a real deployment, we might want to run this async or in a separate thread
                         # to avoid blocking the serial read loop.
-                        if API_URL != "YOUR_API_GATEWAY_URL":
+                        if True:
                              response = requests.post(f"{API_URL}/motion", json=data)
                              print(f"Server response: {response.status_code}")
                         else:
