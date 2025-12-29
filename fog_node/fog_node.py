@@ -2,7 +2,16 @@ import serial
 import time
 import requests
 import json
+import base64
 import os
+
+# Try importing OpenCV
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    print("OpenCV (cv2) not found. Image capture disabled.")
+    CV2_AVAILABLE = False
 
 # Configuration
 SERIAL_PORT = '/dev/ttyUSB0' # Update this to match your connected Arduino
@@ -16,20 +25,47 @@ CONFIRMATION_READINGS = 10  # Number of consecutive "ON" readings required to co
 READING_INTERVAL = 0.5  # Seconds between readings for confirmation
 DEBUG_COOLDOWN = False  # Set to True to see cooldown messages
 
+def capture_image():
+    if not CV2_AVAILABLE:
+        return None
+    
+    try:
+        # Open default camera
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Could not open camera")
+            return None
+            
+        ret, frame = cap.read()
+        cap.release()
+        
+        if ret:
+            # Resize to reduce payload size (e.g., 640x480)
+            frame = cv2.resize(frame, (640, 480))
+            # Encode as JPEG
+            retval, buffer = cv2.imencode('.jpg', frame)
+            if retval:
+                jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                return jpg_as_text
+    except Exception as e:
+        print(f"Camera error: {e}")
+    
+    return None
+
 def main():
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         print(f"Connected to {SERIAL_PORT}")
     except Exception as e:
         print(f"Error connecting to serial port: {e}")
-        return
+        # For testing without Arduino, we loop but don't crash
+        # return 
 
     last_state = "OFF"
     last_sent_time = 0  # Timestamp of last sent event
     consecutive_on_count = 0  # Counter for consecutive ON readings
     
-    # Simple state machine for event aggregation could be added here
-    # For now, we follow the plan's logic of filtering/sending relevant events
+    print("Fog Node Running. Waiting for motion...")
 
     while True:
         try:
@@ -58,6 +94,10 @@ def main():
                     if consecutive_on_count >= CONFIRMATION_READINGS and last_state != "ON":
                         
                         print(f"✓ Motion Confirmed! ({consecutive_on_count} readings, {time_since_last_event:.1f}s since last event)")
+                        print("Capturing event...")
+                        
+                        # Capture Image
+                        image_b64 = capture_image()
                         
                         data = {
                             "sensor": SENSOR_ID,
@@ -65,10 +105,13 @@ def main():
                             "type": "motion_detected"
                         }
                         
+                        if image_b64:
+                            print(f"Image captured ({len(image_b64)} bytes).")
+                            data["image"] = image_b64
+                        
                         try:
-                            # In a real deployment, we might want to run this async or in a separate thread
-                            # to avoid blocking the serial read loop.
-                            if True:
+                            # Send to Cloud
+                            if "YOUR_API" not in API_URL:
                                 response = requests.post(f"{API_URL}/motion", json=data)
                                 print(f"  Server response: {response.status_code}")
                             else:
@@ -92,7 +135,6 @@ def main():
                 time.sleep(READING_INTERVAL)
 
         except KeyboardInterrupt:
-            print("Exiting...")
             break
         except Exception as e:
             print(f"Error: {e}")
