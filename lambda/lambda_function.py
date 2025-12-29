@@ -83,10 +83,19 @@ def handle_post(event):
     
     # Publish to SNS
     if SNS_TOPIC_ARN:
-        try:
             message = f"Motion Detected!\nSensor: {sensor_id}\nTime: {timestamp}\nType: {event_type}"
-            if s3_key:
-                message += "\n(Image captured)"
+            if s3_key and S3_BUCKET:
+                try:
+                    url = s3.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': S3_BUCKET, 'Key': s3_key},
+                        ExpiresIn=3600
+                    )
+                    message += f"\nImage: {url}"
+                except Exception as e:
+                    message += "\n(Image captured, but URL gen failed)"
+                    print(f"SNS URL Gen error: {e}")
+            
             sns.publish(
                 TopicArn=SNS_TOPIC_ARN,
                 Message=message,
