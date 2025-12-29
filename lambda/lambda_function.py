@@ -7,23 +7,24 @@ import uuid
 from decimal import Decimal
 
 # Initialize resources
-dynamodb = boto3.resource('dynamodb')
-sns = boto3.client('sns')
-s3 = boto3.client('s3')
-
 TABLE_NAME = "MotionEvents"
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
 S3_BUCKET = os.environ.get('S3_BUCKET')
 
 def lambda_handler(event, context):
     try:
+        # Initialize resources locally to catch errors
+        dynamodb = boto3.resource('dynamodb')
+        sns = boto3.client('sns')
+        s3 = boto3.client('s3')
+
         # Determine HTTP Method
         method = event.get('requestContext', {}).get('http', {}).get('method', 'POST')
         
         if method == 'GET':
-            return handle_get(event)
+            return handle_get(event, dynamodb, s3)
         elif method == 'POST':
-            return handle_post(event)
+            return handle_post(event, dynamodb, sns, s3)
         else:
              return {
                 'statusCode': 405,
@@ -37,7 +38,7 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': str(e)})
         }
 
-def handle_post(event):
+def handle_post(event, dynamodb, sns, s3):
     body = event
     if 'body' in event:
         try:
@@ -83,6 +84,7 @@ def handle_post(event):
     
     # Publish to SNS
     if SNS_TOPIC_ARN:
+        try:
             message = f"Motion Detected!\nSensor: {sensor_id}\nTime: {timestamp}\nType: {event_type}"
             if s3_key and S3_BUCKET:
                 try:
@@ -115,9 +117,9 @@ class DecimalEncoder(json.JSONEncoder):
             return float(obj)
         return super(DecimalEncoder, self).default(obj)
 
-def handle_get(event):
+def handle_get(event, dynamodb, s3):
     table = dynamodb.Table(TABLE_NAME)
-    response = table.scan(Limit=50) # Increased limit
+    response = table.scan(Limit=50)
     items = response.get('Items', [])
     items.sort(key=lambda x: x['Timestamp'], reverse=True)
 
