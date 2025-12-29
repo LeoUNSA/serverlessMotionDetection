@@ -10,6 +10,12 @@ BAUD_RATE = 9600
 API_URL = "https://abal53wj01.execute-api.us-east-1.amazonaws.com/" # Placeholder, will be updated after Terraform deploy
 SENSOR_ID = "PIR_SENSOR_01"
 
+# Motion detection sensitivity settings
+COOLDOWN_PERIOD = 1  # Seconds to wait before sending another motion event
+CONFIRMATION_READINGS = 10  # Number of consecutive "ON" readings required to confirm motion
+READING_INTERVAL = 0.5  # Seconds between readings for confirmation
+DEBUG_COOLDOWN = False  # Set to True to see cooldown messages
+
 def main():
     try:
         ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -19,6 +25,8 @@ def main():
         return
 
     last_state = "OFF"
+    last_sent_time = 0  # Timestamp of last sent event
+    consecutive_on_count = 0  # Counter for consecutive ON readings
     
     # Simple state machine for event aggregation could be added here
     # For now, we follow the plan's logic of filtering/sending relevant events
@@ -26,34 +34,62 @@ def main():
     while True:
         try:
             if ser.in_waiting > 0:
-                line = ser.readline().decode('utf-8').strip()
+                try:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                except UnicodeDecodeError:
+                    continue  # Skip corrupted data
                 
-                # Basic logic: filter "ON" events. 
-                # In a real scenario, we might want to debounce or group "ON"s.
-                if line == "ON" and last_state != "ON":
-                    print("Motion Detected! Sending event...")
+                # Filter logic with cooldown and confirmation
+                if line == "ON":
+                    current_time = time.time()
+                    time_since_last_event = current_time - last_sent_time
                     
-                    data = {
-                        "sensor": SENSOR_ID,
-                        "timestamp": time.time(),
-                        "type": "motion_detected"
-                    }
+                    # If we're in cooldown period, ignore all readings and reset counter
+                    if time_since_last_event < COOLDOWN_PERIOD:
+                        if DEBUG_COOLDOWN and consecutive_on_count == 0:
+                            print(f"In cooldown: {time_since_last_event:.1f}s / {COOLDOWN_PERIOD}s - ignoring sensor")
+                        consecutive_on_count = 0  # Reset counter during cooldown
+                        continue
                     
-                    try:
-                        # In a real deployment, we might want to run this async or in a separate thread
-                        # to avoid blocking the serial read loop.
-                        if True:
-                             response = requests.post(f"{API_URL}/motion", json=data)
-                             print(f"Server response: {response.status_code}")
-                        else:
-                             print("API URL not set. Skipping upload.")
-                    except Exception as req_err:
-                        print(f"Error sending request: {req_err}")
+                    # Only count consecutive readings if we're outside cooldown period
+                    consecutive_on_count += 1
+                    
+                    # Check if we have enough consecutive readings
+                    if consecutive_on_count >= CONFIRMATION_READINGS and last_state != "ON":
+                        
+                        print(f"✓ Motion Confirmed! ({consecutive_on_count} readings, {time_since_last_event:.1f}s since last event)")
+                        
+                        data = {
+                            "sensor": SENSOR_ID,
+                            "timestamp": current_time,
+                            "type": "motion_detected"
+                        }
+                        
+                        try:
+                            # In a real deployment, we might want to run this async or in a separate thread
+                            # to avoid blocking the serial read loop.
+                            if True:
+                                response = requests.post(f"{API_URL}/motion", json=data)
+                                print(f"  Server response: {response.status_code}")
+                            else:
+                                print("  API URL not set. Skipping upload.")
+                        except Exception as req_err:
+                            print(f"  Error sending request: {req_err}")
 
-                    last_state = "ON"
+                        last_state = "ON"
+                        last_sent_time = current_time
+                        consecutive_on_count = 0  # Reset counter after sending
+                    elif consecutive_on_count < CONFIRMATION_READINGS:
+                        print(f"  Confirming motion... {consecutive_on_count}/{CONFIRMATION_READINGS}")
                 
                 elif line == "OFF":
+                    if consecutive_on_count > 0 and consecutive_on_count < CONFIRMATION_READINGS:
+                        print(f"  Motion cancelled - only {consecutive_on_count}/{CONFIRMATION_READINGS} readings")
+                    consecutive_on_count = 0  # Reset counter on OFF
                     last_state = "OFF"
+                
+                # Small delay between readings for confirmation logic
+                time.sleep(READING_INTERVAL)
 
         except KeyboardInterrupt:
             print("Exiting...")
