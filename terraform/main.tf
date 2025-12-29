@@ -51,37 +51,7 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-# IAM Policy for DynamoDB and Logs
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "${var.project_name}_lambda_policy"
-  role = aws_iam_role.lambda_role.id
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:GetItem",
-          "dynamodb:Scan",
-          "dynamodb:Query",
-          "dynamodb:UpdateItem"
-        ]
-        Resource = aws_dynamodb_table.motion_events.arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "arn:aws:logs:*:*:*"
-      }
-    ]
-  })
-}
 
 # Zip the Lambda Code
 data "archive_file" "lambda_zip" {
@@ -90,20 +60,7 @@ data "archive_file" "lambda_zip" {
   output_path = "${path.module}/lambda.zip"
 }
 
-# Lambda Function
-resource "aws_lambda_function" "motion_lambda" {
-  filename      = data.archive_file.lambda_zip.output_path
-  function_name = "MotionHandler"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "lambda_function.lambda_handler"
-  runtime       = "python3.9"
 
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-
-  depends_on = [
-    aws_iam_role_policy.lambda_policy
-  ]
-}
 
 # API Gateway (HTTP API)
 resource "aws_apigatewayv2_api" "http_api" {
@@ -138,5 +95,90 @@ resource "aws_lambda_permission" "api_gw" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.motion_lambda.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*/motion"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
+}
+
+# SNS Topic
+resource "aws_sns_topic" "motion_alerts" {
+  name = "motion_alerts_topic"
+}
+
+# SNS Subscriptions
+resource "aws_sns_topic_subscription" "email_1" {
+  topic_arn = aws_sns_topic.motion_alerts.arn
+  protocol  = "email"
+  endpoint  = "lmontoyac@unsa.edu.pe"
+}
+
+resource "aws_sns_topic_subscription" "email_2" {
+  topic_arn = aws_sns_topic.motion_alerts.arn
+  protocol  = "email"
+  endpoint  = "smenaq@unsa.edu.pe"
+}
+
+# Update IAM Policy to allow SNS Publish
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "${var.project_name}_lambda_policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = aws_dynamodb_table.motion_events.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = aws_sns_topic.motion_alerts.arn
+      }
+    ]
+  })
+}
+
+# Route for GET (Dashboard)
+resource "aws_apigatewayv2_route" "get_motion" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "GET /motion"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+}
+
+# Add SNS ARN to Lambda Environment Variables
+resource "aws_lambda_function" "motion_lambda" {
+  filename      = data.archive_file.lambda_zip.output_path
+  function_name = "MotionHandler"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.9"
+
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+
+  environment {
+    variables = {
+      SNS_TOPIC_ARN = aws_sns_topic.motion_alerts.arn
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy.lambda_policy
+  ]
 }
