@@ -6,40 +6,38 @@ import base64
 import uuid
 from decimal import Decimal
 
+# Initialize resources globally
+dynamodb = boto3.resource('dynamodb')
+sns = boto3.client('sns')
+s3 = boto3.client('s3')
+
 TABLE_NAME = "MotionEvents"
 SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
 S3_BUCKET = os.environ.get('S3_BUCKET')
 
 def lambda_handler(event, context):
     try:
-        # Initialize resources
-        dynamodb = boto3.resource('dynamodb')
-        sns = boto3.client('sns')
-        s3 = boto3.client('s3')
-
         # Determine HTTP Method
         method = event.get('requestContext', {}).get('http', {}).get('method', 'POST')
         
         if method == 'GET':
-            return handle_get(event, dynamodb, s3)
+            return handle_get(event)
         elif method == 'POST':
-            return handle_post(event, dynamodb, sns, s3)
+            return handle_post(event)
         else:
-            return {
+             return {
                 'statusCode': 405,
                 'body': json.dumps({'error': 'Method not allowed'})
             }
 
     except Exception as e:
-        print(f"Error in lambda_handler: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
         return {
             'statusCode': 500,
             'body': json.dumps({'error': str(e)})
         }
 
-def handle_post(event, dynamodb, sns, s3):
+def handle_post(event):
     body = event
     if 'body' in event:
         try:
@@ -118,45 +116,30 @@ class DecimalEncoder(json.JSONEncoder):
             return float(obj)
         return super(DecimalEncoder, self).default(obj)
 
-def handle_get(event, dynamodb, s3):
-    try:
-        table = dynamodb.Table(TABLE_NAME)
-        response = table.scan(Limit=50)
-        items = response.get('Items', [])
-        
-        # Sort by timestamp
-        items.sort(key=lambda x: float(x['Timestamp']), reverse=True)
+def handle_get(event):
+    table = dynamodb.Table(TABLE_NAME)
+    response = table.scan(Limit=100)
+    items = response.get('Items', [])
+    items.sort(key=lambda x: x['Timestamp'], reverse=True)
 
-        # Generate Presigned URLs for images
-        for item in items:
-            if 'S3Key' in item and S3_BUCKET:
-                try:
-                    url = s3.generate_presigned_url(
-                        'get_object',
-                        Params={'Bucket': S3_BUCKET, 'Key': item['S3Key']},
-                        ExpiresIn=3600
-                    )
-                    item['ImageUrl'] = url
-                except Exception as e:
-                    print(f"Error generating URL for {item.get('S3Key')}: {e}")
+    # Generate Presigned URLs for images
+    for item in items:
+        if 'S3Key' in item and S3_BUCKET:
+            try:
+                url = s3.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': S3_BUCKET, 'Key': item['S3Key']},
+                    ExpiresIn=3600
+                )
+                item['ImageUrl'] = url
+            except Exception as e:
+                print(f"Error generating URL: {e}")
 
-        return {
-            'statusCode': 200,
-            'headers': {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            'body': json.dumps(items, cls=DecimalEncoder)
-        }
-    except Exception as e:
-        print(f"Error in handle_get: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            'statusCode': 500,
-            'headers': {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            'body': json.dumps({'error': str(e)})
-        }
+    return {
+        'statusCode': 200,
+        'headers': {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
+        },
+        'body': json.dumps(items, cls=DecimalEncoder)
+    }
