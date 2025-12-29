@@ -1,0 +1,11 @@
+# Fog Node Dependencies
+# Sistema de detección inteligente de movimiento
+
+# OpenCV para procesamiento de imágenes y video
+opencv-python>=4.8.0
+
+# NumPy para operaciones matemáticas y análisis de arrays
+numpy>=1.24.0
+
+# PySerial para comunicación con Arduino
+pyserial>=3.5
