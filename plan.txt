@@ -1,0 +1,198 @@
+Plan de implementación: detección de movimiento PIR con Arduino, nodo Fog Python y backend AWS
+1. Instalación y conexión del sensor PIR al Arduino Nano
+
+https://www.instructables.com/How-to-Use-PIR-Sensor-Wuth-Arduino-Nano/
+La figura muestra un Arduino Nano conectado a un sensor PIR (con el LED opcional para señalización). Se requiere: Arduino Nano, sensor PIR (HC-SR501), cables macho-hembra y (opcional) LED con resistencia. Conectar VCC del PIR a 5V, GND a GND del Arduino y el pin de salida (OUT) del PIR a un pin digital (por ejemplo D2) del Arduino
+instructables.com
+randomnerdtutorials.com
+. Si se usa un LED de prueba, por ejemplo anodo del LED a D3 (con resistencia) y cátodo a GND
+instructables.com
+. Asegúrese de colocar el Arduino en la protoboard y de usar cables firmes. En resumen:
+Conectar el pin central (OUT) del PIR al pin D2 del Nano (digital IN)
+instructables.com
+randomnerdtutorials.com
+.
+Conectar VCC del PIR al pin 5V del Arduino y GND a GND
+instructables.com
+randomnerdtutorials.com
+.
+(Opcional) Conectar LED en D3 para señal visual.
+2. Programación Arduino: lectura del sensor y envío por Serial
+En el Arduino IDE, escribir un sketch (C/C++) que configure el pin del PIR como entrada y abra el puerto serie. Por ejemplo:
+En setup(): usar pinMode(2, INPUT); para el PIR y Serial.begin(9600); para habilitar el puerto serie
+instructables.com
+. (Si se añadió LED en D3, definirlo como OUTPUT también
+instructables.com
+).
+En loop(): leer el PIR con bool detected = digitalRead(2);. Si detected == HIGH, hacer Serial.println("ON"); y encender el LED; si no, Serial.println("OFF"); y apagar el LED
+instructables.com
+. Este código imprime “ON” u “OFF” en el monitor serial cada vez que cambia el estado
+instructables.com
+. Por ejemplo:
+void setup() {
+  pinMode(2, INPUT);      // PIR sensor input
+  pinMode(3, OUTPUT);     // LED output (opcional)
+  Serial.begin(9600);     // puerto serie a 9600 baud
+}
+void loop() {
+  int motion = digitalRead(2);
+  if (motion == HIGH) {
+    Serial.println("ON");
+    digitalWrite(3, HIGH);  // enciende LED
+  } else {
+    Serial.println("OFF");
+    digitalWrite(3, LOW);   // apaga LED
+  }
+  delay(100);  // pequeña demora para estabilidad
+}
+De este modo el Arduino detecta movimiento con el PIR y envía cada lectura al puerto serie (la PC o nodo Fog la leerá)
+instructables.com
+.
+3. Nodo Fog en Python: lectura, filtrado y envío HTTP
+En un computador o Raspberry Pi local (mismo sitio de instalación), ejecutar un script Python (“nodo Fog”) que:
+Instalar librerías: use Python 3.7+ con pip install pyserial requests.
+Leer puerto serie: abrir el puerto USB donde está el Arduino (ej. /dev/ttyACM0 o COM3) a 9600 baudios:
+import serial, time, requests
+ser = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+Eliminar falsos positivos: a menudo los PIR generan picos breves. Puede implementar un antirrebote simple: p.ej. contar al menos 3 lecturas consecutivas “ON” antes de considerar evento real, o ignorar transiciones muy cortas (<1 s). También agrupar eventos cercanos en el tiempo: si llegan múltiples “ON” en <30 s, tratarlos como un solo evento continuo. (Esto reduce alarmas falsas y paquetes repetidos).
+Agrupación de eventos: almacenar internamente cuando comienza un evento (estado=ON) y cuándo termina (primera lectura “OFF” sostenida). Solo al finalizar un evento significativo, generar un registro con timestamp y duración.
+Enviar evento HTTP: cuando se confirme un movimiento relevante (tras filtrado y agrupación), enviar un POST con la información a la API. Por ejemplo:
+data = {"sensor": "PIR1", "timestamp": time.time(), "type": "motion_detected"}
+response = requests.post("https://API_GATEWAY_URL/motion", json=data)
+El endpoint de la API (del siguiente paso) recibirá este JSON. Maneje errores de red y reintentos según sea necesario. En resumen, el nodo Fog lee las cadenas por serie, filtra ruido, forma eventos y usa requests.post() para enviarlos al API Gateway.
+4. Creación de la API HTTP en AWS (API Gateway)
+En AWS API Gateway, crear una nueva API HTTP pública para recibir los eventos:
+En la consola de API Gateway, elegir Create API → HTTP API. Poner un nombre (ej. “MotionAPI”).
+Crear una ruta tipo POST /motion (u otro recurso), que actúe como endpoint para los datos enviados por el fog.
+Integrar esa ruta con la función Lambda que procesará los eventos (ver siguiente sección). En los ajustes de integración, seleccionar Lambda Function (añadir la función creada)
+docs.aws.amazon.com
+.
+Configurar permisos: API Gateway requiere permiso para invocar Lambda (se crea automáticamente si se usa consola).
+Desplegar la API en un Stage (e.g. “dev”). Copiar la URL de invocación final (p.ej. https://xxxxx.execute-api.REGION.amazonaws.com/dev/motion).
+Usando la CLI sería equivalente a aws apigatewayv2 create-api --name mi-api --protocol-type HTTP --target arn:...:lambda:...:función
+docs.aws.amazon.com
+. Al final, la API debe estar lista para recibir llamadas POST con JSON desde el nodo Fog.
+5. Función AWS Lambda: procesar y almacenar eventos
+Crear una función Lambda (runtime Python 3.x) que se active al recibir llamadas desde la API. Pasos clave:
+Código Python: en el handler (lambda_handler), el evento de API Gateway contendrá el JSON enviado. Parsear los campos (por ejemplo sensor y timestamp).
+Conectar con DynamoDB: en el código importar boto3, luego acceder a DynamoDB:
+import boto3
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table("MotionEvents")
+table.put_item(Item={
+    "SensorID": event["sensor"],
+    "Timestamp": Decimal(str(event["timestamp"])),
+    "EventType": event["type"]
+})
+Este ejemplo inserta un ítem con clave compuesta (SensorID, Timestamp) y otros atributos
+stackoverflow.com
+stackoverflow.com
+. Asegúrese de convertir el timestamp a número (decimal).
+Permisos IAM: la función Lambda debe tener un rol IAM con permisos dynamodb:PutItem sobre la tabla y permisos básicos de CloudWatch Logs.
+Manejo de errores: validar el contenido del evento y manejar excepciones (p.ej. reintentos en Dynamo o descartes).
+De este modo, cada vez que la API Gateway reciba el POST, invocará Lambda, que guardará el registro en DynamoDB
+stackoverflow.com
+stackoverflow.com
+.
+6. Creación de la tabla DynamoDB para registros
+Definir una tabla DynamoDB (por ejemplo “MotionEvents”) para almacenar los eventos. Se recomienda:
+Clave de partición (hash key): SensorID (tipo String) para identificar la fuente del sensor.
+Clave de orden (range key): Timestamp (tipo Number) para la marca temporal. Esto permite múltiples registros por sensor ordenados cronológicamente.
+Atributos adicionales opcionales: tipo de evento, duración, etc.
+Capacidad: usar modo On-Demand (PAY_PER_REQUEST) para escalar automáticamente sin aprovisionar lectura/escritura.
+En Terraform se vería parecido a:
+resource "aws_dynamodb_table" "motion_events" {
+  name         = "MotionEvents"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "SensorID"
+  range_key    = "Timestamp"
+  attribute { name = "SensorID";  type = "S" }
+  attribute { name = "Timestamp"; type = "N" }
+}
+Este ejemplo define las claves y atributos necesarios
+geeksforgeeks.org
+geeksforgeeks.org
+. Una tabla DynamoDB completamente gestionada almacenará los registros de forma altamente escalable y con baja latencia.
+7. Despliegue de infraestructura con Terraform
+Usar Terraform para automatizar todo lo anterior:
+Proveedor AWS: en el main.tf, configurar el provider con la región deseada. Se asume que ya se han configurado credenciales AWS.
+Recursos de API Gateway: definir aws_api_gateway_rest_api para la API y aws_api_gateway_resource más aws_api_gateway_method para el endpoint POST
+stackoverflow.com
+. Por ejemplo:
+resource "aws_api_gateway_rest_api" "api" {
+  name = "MotionAPIGateway"
+}
+resource "aws_api_gateway_resource" "motion" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "motion"
+}
+resource "aws_api_gateway_method" "post_motion" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.motion.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+(Se agregaría luego la integración con Lambda y deployment). Este esquema sigue ejemplos de Terraform para API Gateway
+stackoverflow.com
+.
+Función Lambda: usar aws_lambda_function indicando filename del código ZIP, function_name, handler, runtime = "python3.x" y el rol IAM asociado
+spacelift.io
+. P. ej.:
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambda_code/"
+  output_path = "${path.module}/lambda_code/lambda.zip"
+}
+resource "aws_lambda_function" "motion_lambda" {
+  filename      = data.archive_file.lambda_zip.output_path
+  function_name = "MotionHandler"
+  handler       = "index.lambda_handler"
+  role          = aws_iam_role.lambda_role.arn
+  runtime       = "python3.9"
+  depends_on    = [aws_iam_role_policy_attachment.lambda_attach]
+}
+(Ejemplo basado en tutorial de Terraform
+spacelift.io
+).
+Tabla DynamoDB: crear aws_dynamodb_table como en el paso anterior
+geeksforgeeks.org
+geeksforgeeks.org
+.
+Permisos: con Terraform también crear el rol IAM para Lambda (políticas de logs y DynamoDB) y la autorización (aws_lambda_permission) para que API Gateway invoque la función.
+Finalmente, ejecutar terraform init, terraform plan y terraform apply para desplegar todo el stack. Terraform garantizará que la API Gateway, Lambda y DynamoDB queden correctamente creados y conectados. El uso de Terraform permite definir esta infraestructura como código, versionarla y reproducirla fácilmente
+geeksforgeeks.org
+.
+8. Flujo de datos de extremo a extremo
+Detección local: el PIR detecta movimiento y el Arduino Nano lee el valor y envía “ON” al puerto serie.
+Procesamiento Fog: el script Python lee el “ON”, verifica que no sea un ruido, determina el comienzo/fin del evento, y cuando corresponda envía un POST HTTP con los detalles (sensor, timestamp, etc.) a la API Gateway.
+API Gateway: recibe el POST /motion y desencadena la función Lambda asociada.
+Función Lambda: el handler Python recibe el JSON del evento, extrae campos relevantes y ejecuta put_item para almacenar el registro en DynamoDB
+stackoverflow.com
+stackoverflow.com
+.
+Almacenamiento: DynamoDB guarda cada detección con su timestamp. De este modo el evento queda registrado y disponible para consultas posteriores.
+Este flujo minimiza latencia: los datos se procesan localmente y solo los eventos importantes se envían al cloud, donde AWS Gateway y Lambda gestionan la lógica de backend y persistencia.
+9. Justificación técnica y operativa
+Arduino Nano + PIR: combinación de bajo costo y simplicidad. El PIR HC-SR501 es económico y detecta movimiento por infrarrojo. El Arduino Nano, pequeño y fácil de programar, lee el sensor y comunica por USB al nodo Fog (no se necesita hardware más complejo)
+instructables.com
+randomnerdtutorials.com
+.
+Procesamiento Fog (Python): ejecutar análisis localmente (filtrado de ruido, agrupación) reduce el tráfico de red y proporciona reacción inmediata. Python ofrece bibliotecas como PySerial y Requests, facilitando la implementación rápida en hardware modesto (Raspberry Pi, PC) sin afectar el rendimiento del IoT.
+API Gateway (HTTP): expone un endpoint REST escalable y gestionado. Permite abstraer la lógica de invocación (autenticación, throttling) y se integra fácilmente con Lambda
+docs.aws.amazon.com
+. El uso de HTTP POST es universal y fácil de probar.
+Lambda (serverless): ejecuta sólo cuando hay eventos, escalando automáticamente según la carga. No requiere administrar servidores, y el coste es por ejecución. AWS Lambda está diseñado para este tipo de procesamiento de eventos IoT.
+DynamoDB: base de datos NoSQL completamente gestionada por AWS, que escala automáticamente y ofrece baja latencia. Es ideal para almacenar eventos de sensores con claves sencillas. DynamoDB soporta cargas variables (por demanda) y evita la sobrecarga operativa de una base de datos tradicional. La documentación destaca que DynamoDB es “una base de datos NoSQL totalmente gestionada de AWS” con alta escalabilidad
+geeksforgeeks.org
+.
+Terraform: facilita el despliegue repetible y versionado de toda la infraestructura (API, Lambda, Dynamo). Permite describir recursos en código, evitando configuraciones manuales. Como explican los expertos, Terraform “permite definir infraestructura como código… fácil de versionar y compartir”
+geeksforgeeks.org
+. Esto mejora la gobernanza y reproducibilidad del sistema.
+En conjunto, esta arquitectura combina hardware local simple con capacidades en la nube flexibles. El procesamiento inicial en el fog node reduce datos irrelevantes enviados al cloud, y AWS se encarga de escalar la capa backend (API, cómputo, almacenamiento) bajo demanda, optimizando costos y mantenimiento.
+10. Extensiones y mejoras (opcionales)
+Alertas en tiempo real: agregar notificaciones (SMS, email o push) cuando se detecte movimiento. Por ejemplo, conectar Lambda a AWS SNS o Amazon Pinpoint para avisos inmediatos.
+Estadísticas y monitoreo: usar AWS CloudWatch o AWS IoT Analytics para generar métricas (movimientos por hora, por día) y crear dashboards en CloudWatch o QuickSight. Se podría también exportar los datos (DynamoDB → S3 → Athena) para análisis históricos.
+Reconocimiento adicional: integrar una cámara o sensor adicional; por ejemplo, capturar una foto cuando el PIR se activa (usando una Raspberry Pi con cámara y OpenCV) o pasar los datos a un modelo de IA en AWS para clasificar el tipo de movimiento (persona, animal, etc.).
+Escalabilidad de sensores: ampliar el diseño a múltiples sensores PIR distribuidos. Cada Arduino podría identificarse con un ID diferente (SensorID) y enviar eventos al mismo API/Gateway, lo que DynamoDB podrá organizar por sensor.
+Cada mejora dependerá de los requisitos: por ejemplo, agregar alertas implica usar otro servicio serverless (SNS) y tal vez otra Lambda, mientras que estadísticas puede implementarse con herramientas analíticas de AWS. Estos pasos opcionales aprovechan la flexibilidad del modelo serverless y fog para enriquecer el sistema.
